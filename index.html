@@ -23,10 +23,16 @@
   .card{display:inline-flex;flex-direction:column;align-items:center;justify-content:center;width:72px;height:99px;border-radius:10px;background:var(--ivory);color:var(--ink);font-family:'Fraunces',serif;font-weight:600;font-size:23px;cursor:pointer;box-shadow:0 2px 0 rgba(0,0,0,0.25);}
   .card.disabled{opacity:0.3;cursor:not-allowed;}
   .card.back{background:var(--felt-light);color:var(--muted);font-size:27px;border:1px dashed var(--muted);}
-  .row{display:flex;gap:8px;flex-wrap:wrap;}
+  .row{display:flex;gap:10px;flex-wrap:wrap;}
   .col{display:flex;flex-direction:column;gap:8px;}
   .center{text-align:center;}
   .table{display:grid;grid-template-columns:1fr 2fr 1fr;grid-template-rows:auto auto auto;grid-template-areas:". top ." "left mid right" ". bottom .";gap:10px;align-items:center;margin:18px 0;}
+  .trickgrid{display:grid;grid-template-columns:1fr 1fr 1fr;grid-template-rows:auto auto auto;grid-template-areas:". top ." "left center right" ". bottom .";gap:12px;align-items:center;justify-items:center;min-height:210px;}
+  .trickslot{text-align:center;}
+  .trickslot.top{grid-area:top;}
+  .trickslot.bottom{grid-area:bottom;}
+  .trickslot.left{grid-area:left;}
+  .trickslot.right{grid-area:right;}
   .scoreboard-wrap{position:relative;}
   .trump-corner{position:absolute;top:-14px;right:0;z-index:2;display:flex;flex-direction:column;align-items:center;justify-content:center;width:78px;height:107px;border-radius:10px;background:var(--ivory);box-shadow:0 3px 0 rgba(0,0,0,0.3);font-family:'Fraunces',serif;font-weight:700;}
   .trump-corner .rank{font-size:22px;color:var(--ink);line-height:1;}
@@ -101,9 +107,71 @@ function computeValidCards(hand,trick,trump){
   }
 }
 function estimateBid(hand,trump){let score=0;hand.forEach(c=>{if(c.suit===trump)score+=c.rank>=12?1.2:0.6;else if(c.rank===14)score+=1;else if(c.rank===13)score+=0.7;});let bid=Math.round(score);return Math.max(1,Math.min(13,bid));}
-function botPickCard(hand,trick,trump){
+
+// ---------- Bot card-counting helpers ----------
+function cardKey(c){ return c.suit+c.rank; }
+function unseenCards(myHand, playedCards){
+  const seen=new Set();
+  myHand.forEach(c=>seen.add(cardKey(c)));
+  (playedCards||[]).forEach(c=>seen.add(cardKey(c)));
+  return newDeck().filter(c=>!seen.has(cardKey(c)));
+}
+// True if no card still unaccounted-for (i.e. sitting in another player's hand) could beat this card if led now.
+function isSafeLead(card, myHand, playedCards, trump){
+  const unseen=unseenCards(myHand, playedCards);
+  if(card.suit===trump){
+    return !unseen.some(c=>c.suit===trump && c.rank>card.rank);
+  }
+  const higherSameSuit=unseen.some(c=>c.suit===card.suit && c.rank>card.rank);
+  const anyTrumpOut=unseen.some(c=>c.suit===trump);
+  return !higherSameSuit && !anyTrumpOut;
+}
+
+function botPickCard(hand,trick,trump,ctx){
+  ctx = ctx || {};
   const valid=computeValidCards(hand,trick,trump);
-  if(trick.length===0){const nonTrump=valid.filter(c=>c.suit!==trump);const pool=nonTrump.length>0?nonTrump:valid;return pool.reduce((a,b)=>a.rank<b.rank?a:b);}
+  if(valid.length===1) return valid[0];
+
+  const bid = ctx.bid;
+  const tricksWon = ctx.tricksWon || 0;
+  const playedCards = ctx.playedCards || [];
+  const ruleMode = ctx.ruleMode || 'local';
+  const hasBidInfo = bid!=null;
+  // How many wins are still "safe" (won't trigger the 2-over penalty)?
+  const maxSafeWins = hasBidInfo ? (ruleMode==='local' ? bid+1 : bid) : Infinity;
+  const wantsToWin = hasBidInfo && tricksWon < bid;
+  const shouldAvoidWinning = hasBidInfo && tricksWon >= maxSafeWins;
+
+  if(trick.length===0){
+    // Leading a fresh trick — full freedom over which card to play.
+    const nonTrump=valid.filter(c=>c.suit!==trump);
+    const pool = nonTrump.length ? nonTrump : valid;
+    if(shouldAvoidWinning){
+      // Prefer a lead that can plausibly be beaten by someone else.
+      const unsafe = pool.filter(c=>!isSafeLead(c, hand, playedCards, trump));
+      const options = unsafe.length ? unsafe : pool;
+      return options.reduce((a,b)=>a.rank<b.rank?a:b);
+    }
+    // Otherwise, try to win cheaply: lead the lowest guaranteed-winning card if one exists.
+    const safeWins = pool.filter(c=>isSafeLead(c, hand, playedCards, trump));
+    if(safeWins.length) return safeWins.reduce((a,b)=>a.rank<b.rank?a:b);
+    if(wantsToWin){
+      const trumps=valid.filter(c=>c.suit===trump);
+      if(trumps.length) return trumps.reduce((a,b)=>a.rank>b.rank?a:b);
+      return valid.reduce((a,b)=>a.rank>b.rank?a:b);
+    }
+    return pool.reduce((a,b)=>a.rank<b.rank?a:b);
+  }
+
+  // Following — the forced-follow/must-beat/must-trump rules already dictate most of this.
+  // Where a genuine choice remains (which specific winning or discard card), prefer to
+  // conserve strength: play the lowest valid card, favoring a non-trump discard when trying
+  // to avoid winning further tricks.
+  if(shouldAvoidWinning){
+    const nonTrump=valid.filter(c=>c.suit!==trump);
+    const pool=nonTrump.length?nonTrump:valid;
+    return pool.reduce((a,b)=>a.rank<b.rank?a:b);
+  }
   return valid.reduce((a,b)=>a.rank<b.rank?a:b);
 }
 function isBotUid(uid){ return typeof uid==='string' && uid.indexOf('bot-')===0; }
@@ -112,6 +180,23 @@ let myUid=null, myName='', roomId=null, roomRef=null, myHandRef=null;
 let room=null, myHand={cards:[],bid:null};
 let localTrumpOptions=null, myBidDraft=5;
 let botMoving=false;
+let optimisticCard=null;
+let myAutoPlay=false;
+function toggleMyAutoPlay(){ myAutoPlay=!myAutoPlay; render(); if(myAutoPlay && room) onRoomChange(); }
+async function autoSubmitMyBid(){
+  const bid=estimateBid(myHand.cards, room.trumpSuit);
+  myBidDraft=bid;
+  await myHandRef.update({bid});
+  await roomRef.update({['readyPlayers.'+myUid]:true});
+}
+function displayTrick(){
+  let t=(room.currentTrick||[]).slice();
+  if(optimisticCard && !t.some(e=>e.seat===optimisticCard.seat)){
+    t.push({uid:myUid, seat:optimisticCard.seat, card:optimisticCard.card});
+  }
+  return t;
+}
+function displaySeatToAct(){ return ((room.leaderSeat||0) + displayTrick().length) % 4; }
 let showHistory=false;
 const pageLoadTs=Date.now();
 const handled=new Set();
@@ -123,12 +208,6 @@ function onceAsync(key, fn){
 
 function mySeat(){ return room && room.players ? room.players.findIndex(p=>p.uid===myUid) : -1; }
 function seatToAct(){ return ((room.leaderSeat||0) + (room.currentTrick||[]).length) % 4; }
-function iAmResponsibleForSeat(seatIdx){
-  const p=room.players[seatIdx]; if(!p) return false;
-  if(p.uid===myUid) return true;
-  if(isBotUid(p.uid) && myUid===room.hostUid) return true;
-  return false;
-}
 
 auth.onAuthStateChanged(user=>{
   if(user){ myUid=user.uid; boot(); }
@@ -176,8 +255,8 @@ async function doCreate(humanCount){
     players,
     phase:'waiting', round:0, dealSeq:0, dealerSeat:0, trumpChooserSeat:1,
     trumpSuit:null, sideOf:{}, currentTrick:[], leaderSeat:0, trickNum:1,
-    tricksWon:{}, scores:{}, revealedBids:{}, roundScores:{}, history:[],
-    readyPlayers:{}, cancelReason:''
+    tricksWon:{}, scores:{}, revealedBids:{}, roundScores:{}, history:[], playedCards:[], currentRoundTricks:[],
+    readyPlayers:{}, cancelReason:'', ruleMode:'local', elevenMode:true, redealAttempt:0
   });
   history.replaceState(null,'','?room='+roomId);
   subscribe();
@@ -204,24 +283,35 @@ async function doJoin(){
 function subscribe(){
   roomRef.onSnapshot(snap=>{ room=snap.data(); onRoomChange(); });
   myHandRef.onSnapshot(snap=>{ if(snap.exists){ myHand=snap.data(); } render(); });
+  setInterval(()=>{ if(room) onRoomChange(); }, 2500);
 }
 
 function onRoomChange(){
   if(!room){ render(); return; }
   const seq=room.dealSeq||0;
+  if((room.currentTrick||[]).length===0){ optimisticCard=null; }
 
-  if(room.phase==='trump' && !room.trumpSuit && isBotUid(room.players[room.trumpChooserSeat].uid) && myUid===room.hostUid){
+  if(room.phase==='trump' && !room.trumpSuit && isBotUid(room.players[room.trumpChooserSeat].uid)){
     onceAsync('trumpbot-'+seq, ()=>roomRef.update({trumpSuit: SUITS[Math.floor(Math.random()*4)].key}));
   }
-  if(room.phase==='trump' && room.trumpSuit && iAmResponsibleForSeat(room.dealerSeat)){
+  if(room.phase==='trump' && !room.trumpSuit && mySeat()===room.trumpChooserSeat && myAutoPlay){
+    onceAsync('autotrump-'+myUid+'-'+seq, ()=>roomRef.update({trumpSuit: SUITS[Math.floor(Math.random()*4)].key}));
+  }
+  if(room.phase==='trump' && room.trumpSuit){
     onceAsync('deal-'+seq, performDeal);
+  }
+  if(room.phase==='cancelled'){
+    onceAsync('redeal-'+(room.redealAttempt||0), ()=>new Promise(res=>setTimeout(()=>performDeal().then(res).catch(res), 1000)));
   }
   if(room.phase==='bidding'){
     room.players.forEach(p=>{
-      if(isBotUid(p.uid) && myUid===room.hostUid && !(room.readyPlayers&&room.readyPlayers[p.uid])){
+      if(isBotUid(p.uid) && !(room.readyPlayers&&room.readyPlayers[p.uid])){
         onceAsync('botbid-'+p.uid+'-'+seq, ()=>doBotBid(p.uid));
       }
     });
+    if(myAutoPlay && !(room.readyPlayers&&room.readyPlayers[myUid])){
+      onceAsync('autobid-'+myUid+'-'+seq, autoSubmitMyBid);
+    }
     const ready=room.readyPlayers||{};
     if(room.players.every(p=>ready[p.uid])){
       onceAsync('start-'+seq, tryStartPlaying);
@@ -229,9 +319,23 @@ function onRoomChange(){
   }
   if(room.phase==='playing' && (room.currentTrick||[]).length<4){
     const seat=seatToAct(); const p=room.players[seat];
-    if(p && isBotUid(p.uid) && myUid===room.hostUid && !botMoving){
+    if(p && isBotUid(p.uid) && !botMoving){
       botMoving=true;
-      setTimeout(()=>{ doBotPlay(p.uid, seat).finally(()=>{ botMoving=false; onRoomChange(); }); }, 500);
+      setTimeout(()=>{ doBotPlay(p.uid, seat).finally(()=>{ botMoving=false; onRoomChange(); }); }, 450);
+    }
+    if(seat===mySeat() && !optimisticCard){
+      const valid=computeValidCards(myHand.cards, room.currentTrick||[], room.trumpSuit);
+      if(valid.length===1 || myAutoPlay){
+        let chosen;
+        if(valid.length===1){
+          chosen=valid[0];
+        } else {
+          const myTricksWon=(room.tricksWon&&room.tricksWon[myUid])||0;
+          const myPlayedCards=(room.playedCards||[]).concat((room.currentTrick||[]).map(e=>e.card));
+          chosen=botPickCard(myHand.cards, room.currentTrick||[], room.trumpSuit, {bid: myHand.bid, tricksWon: myTricksWon, ruleMode: room.ruleMode, playedCards: myPlayedCards});
+        }
+        onceAsync('autoplay-'+seq+'-'+room.trickNum+'-'+(room.currentTrick||[]).length, ()=>new Promise(res=>setTimeout(()=>{ playCard(chosen.suit, chosen.rank).then(res).catch(res); }, 300)));
+      }
     }
   }
   if(room.phase==='playing' && (room.currentTrick||[]).length===4){
@@ -239,7 +343,7 @@ function onRoomChange(){
   }
   if(room.cancelRequest){
     room.players.forEach(p=>{
-      if(isBotUid(p.uid) && myUid===room.hostUid && !room.cancelRequest.votes[p.uid]){
+      if(isBotUid(p.uid) && !room.cancelRequest.votes[p.uid]){
         onceAsync('cancelbotvote-'+p.uid+'-'+room.cancelRequest.id, ()=>roomRef.update({['cancelRequest.votes.'+p.uid]:true}));
       }
     });
@@ -252,7 +356,7 @@ function onRoomChange(){
       roomRef.update({['revealedBids.'+myUid]: myHand.bid});
     }
     room.players.forEach(p=>{
-      if(isBotUid(p.uid) && myUid===room.hostUid && !(room.revealedBids&&room.revealedBids[p.uid]!=null)){
+      if(isBotUid(p.uid) && !(room.revealedBids&&room.revealedBids[p.uid]!=null)){
         onceAsync('botreveal-'+p.uid+'-'+seq, ()=>revealBotBid(p.uid));
       }
     });
@@ -265,28 +369,35 @@ function onRoomChange(){
 }
 
 async function performDeal(){
-  const deck=shuffle(newDeck());
-  const hands=[[],[],[],[]];
-  for(let i=0;i<4;i++) hands[i]=sortHand(deck.slice(i*13,(i+1)*13), room.trumpSuit);
-  const noTrumpVoid=hands.some(h=>h.filter(c=>c.suit===room.trumpSuit).length===0);
-  const noFaceCard=hands.some(h=>h.filter(c=>c.rank>=11).length===0);
-  if(noTrumpVoid||noFaceCard){
-    await roomRef.update({phase:'cancelled', cancelReason: noTrumpVoid?'a player had no trump cards':'a player had no ace, king, queen, or jack'});
-    setTimeout(performDeal,1600);
-    return;
+  try{
+    await db.runTransaction(async tx=>{
+      const snap=await tx.get(roomRef); const d=snap.data();
+      if(d.phase!=='trump' && d.phase!=='cancelled') return;
+      if(!d.trumpSuit) return;
+      const deck=shuffle(newDeck());
+      const hands=[[],[],[],[]];
+      for(let i=0;i<4;i++) hands[i]=sortHand(deck.slice(i*13,(i+1)*13), d.trumpSuit);
+      const noTrumpVoid=hands.some(h=>h.filter(c=>c.suit===d.trumpSuit).length===0);
+      const noFaceCard=hands.some(h=>h.filter(c=>c.rank>=11).length===0);
+      const allFourAces = d.ruleMode==='local' && hands.some(h=>SUITS.every(s=>h.some(c=>c.suit===s.key&&c.rank===14)));
+      if(noTrumpVoid||noFaceCard||allFourAces){
+        const reason = noTrumpVoid?'a player had no trump cards':noFaceCard?'a player had no ace, king, queen, or jack':'a player was dealt all four Aces';
+        tx.update(roomRef, {phase:'cancelled', cancelReason: reason, redealAttempt:(d.redealAttempt||0)+1});
+        return;
+      }
+      const nonTrump=SUITS.map(s=>s.key).filter(k=>k!==d.trumpSuit);
+      const sideOf={}; const tricksWon={};
+      d.players.forEach((p,i)=>{
+        sideOf[p.uid]=nonTrump.some(suit=>hands[i].filter(c=>c.suit===suit).length===0);
+        tricksWon[p.uid]=0;
+      });
+      tx.update(roomRef, {phase:'bidding', sideOf, tricksWon, revealedBids:{}, currentTrick:[], leaderSeat:d.trumpChooserSeat, trickNum:1, readyPlayers:{}, cancelReason:'', playedCards:[], currentRoundTricks:[]});
+      d.players.forEach((p,i)=>{ tx.set(roomRef.collection('hands').doc(p.uid), {cards:hands[i], bid:null}); });
+    });
+  }catch(e){
+    console.error('performDeal failed:', e);
+    roomRef.update({phase:'cancelled', cancelReason:'a technical hiccup interrupted dealing', redealAttempt:(room.redealAttempt||0)+1}).catch(()=>{});
   }
-  const nonTrump=SUITS.map(s=>s.key).filter(k=>k!==room.trumpSuit);
-  const sideOf={}; const tricksWon={};
-  room.players.forEach((p,i)=>{
-    sideOf[p.uid]=nonTrump.some(suit=>hands[i].filter(c=>c.suit===suit).length===0);
-    tricksWon[p.uid]=0;
-  });
-  await db.runTransaction(async tx=>{
-    const snap=await tx.get(roomRef); const d=snap.data();
-    if(d.phase!=='trump' || d.trumpSuit!==room.trumpSuit) return;
-    tx.update(roomRef, {phase:'bidding', sideOf, tricksWon, revealedBids:{}, currentTrick:[], leaderSeat:d.trumpChooserSeat, trickNum:1, readyPlayers:{}, cancelReason:''});
-    room.players.forEach((p,i)=>{ tx.set(roomRef.collection('hands').doc(p.uid), {cards:hands[i], bid:null}); });
-  });
 }
 
 async function doBotBid(uid){
@@ -307,7 +418,10 @@ async function revealBotBid(uid){
 async function doBotPlay(uid, seat){
   const snap=await roomRef.collection('hands').doc(uid).get();
   const hand=snap.data().cards;
-  const card=botPickCard(hand, room.currentTrick||[], room.trumpSuit);
+  const bid=snap.data().bid;
+  const tricksWon=(room.tricksWon&&room.tricksWon[uid])||0;
+  const playedCards=(room.playedCards||[]).concat((room.currentTrick||[]).map(e=>e.card));
+  const card=botPickCard(hand, room.currentTrick||[], room.trumpSuit, {bid, tricksWon, ruleMode: room.ruleMode, playedCards});
   await executePlay(uid, seat, card, hand);
 }
 
@@ -327,17 +441,22 @@ async function tryFinishRound(){
     const uids=d.players.map(p=>p.uid);
     if(!uids.every(u=>d.revealedBids&&d.revealedBids[u]!=null)) return;
     const totalBids=uids.reduce((sum,u)=>sum+(d.revealedBids[u]||0),0);
+    const isLocal = d.ruleMode==='local';
     const roundScores={}; const scores={...d.scores};
     uids.forEach(u=>{
       const bid=d.revealedBids[u], won=d.tricksWon[u]||0, diff=won-bid;
       let sc;
-      if(diff<0) sc=-bid;
-      else if(diff<=1) sc=bid;
-      else sc = totalBids>=11 ? bid : -bid;
-      if(bid===8 && won===8) sc+=8;
+      if(!isLocal){
+        sc = diff===0 ? bid : -bid;
+      } else {
+        if(diff<0) sc=-bid;
+        else if(diff<=1) sc=bid;
+        else sc = (d.elevenMode && totalBids>=11) ? bid : -bid;
+        if(bid===8 && sc===8) sc+=8;
+      }
       roundScores[u]=sc; scores[u]=(scores[u]||0)+sc;
     });
-    const historyEntry={round:d.round, bids:d.revealedBids, tricksWon:d.tricksWon, roundScores};
+    const historyEntry={round:d.round, bids:d.revealedBids, tricksWon:d.tricksWon, roundScores, ruleMode:d.ruleMode, elevenMode:d.elevenMode, trumpSuit:d.trumpSuit, dealerSeat:d.dealerSeat, trumpChooserSeat:d.trumpChooserSeat, players:d.players.map(p=>({uid:p.uid,name:p.name,isBot:!!p.isBot})), tricks:d.currentRoundTricks||[]};
     tx.update(roomRef,{phase:'reveal', roundScores, scores, history:(d.history||[]).concat([historyEntry])});
   });
 }
@@ -382,9 +501,12 @@ async function resolveCurrentTrick(){
     if(trick.length!==4) return;
     const winnerEntry=currentWinner(trick, d.trumpSuit);
     const tricksWon={...d.tricksWon}; tricksWon[winnerEntry.uid]=(tricksWon[winnerEntry.uid]||0)+1;
+    const playedCards=(d.playedCards||[]).concat(trick.map(e=>e.card));
+    const trickLog={trickNum:d.trickNum, leaderSeat:d.leaderSeat, plays:trick, winnerSeat:winnerEntry.seat, winnerUid:winnerEntry.uid};
+    const currentRoundTricks=(d.currentRoundTricks||[]).concat([trickLog]);
     let update;
-    if(d.trickNum>=13){ update={currentTrick:[], leaderSeat:winnerEntry.seat, tricksWon, phase:'collecting'}; }
-    else{ update={currentTrick:[], leaderSeat:winnerEntry.seat, tricksWon, trickNum:d.trickNum+1}; }
+    if(d.trickNum>=13){ update={currentTrick:[], leaderSeat:winnerEntry.seat, tricksWon, playedCards, currentRoundTricks, phase:'collecting'}; }
+    else{ update={currentTrick:[], leaderSeat:winnerEntry.seat, tricksWon, playedCards, currentRoundTricks, trickNum:d.trickNum+1}; }
     tx.update(roomRef, update);
   });
 }
@@ -394,7 +516,10 @@ async function playCard(suit,rank){
   const card={suit,rank};
   const valid=computeValidCards(myHand.cards, room.currentTrick||[], room.trumpSuit);
   if(!valid.some(c=>c.suit===suit&&c.rank===rank)) return;
+  optimisticCard={seat:mySeat(), card};
+  render();
   await executePlay(myUid, mySeat(), card, myHand.cards);
+  optimisticCard=null;
 }
 
 async function nextRound(){
@@ -404,6 +529,15 @@ async function nextRound(){
     const dealerSeat=(d.dealerSeat+1)%4;
     tx.update(roomRef,{phase:'trump', round:d.round+1, dealSeq:(d.dealSeq||0)+1, dealerSeat, trumpChooserSeat:(dealerSeat+1)%4, trumpSuit:null, cancelReason:''});
   });
+}
+
+async function setRuleMode(mode){
+  const scores={}; room.players.forEach(p=>scores[p.uid]=0);
+  await roomRef.update({ruleMode:mode, scores, history:[]});
+}
+async function toggleElevenMode(){
+  const scores={}; room.players.forEach(p=>scores[p.uid]=0);
+  await roomRef.update({elevenMode: !room.elevenMode, scores, history:[]});
 }
 
 async function requestCancelRound(){
@@ -426,8 +560,13 @@ async function applyCancelRound(){
 
 function render(){
   if(!room){ return; }
-  if(room.phase==='waiting'){ renderWaiting(); return; }
-  renderGame();
+  try{
+    if(room.phase==='waiting'){ renderWaiting(); return; }
+    renderGame();
+  }catch(e){
+    console.error('render failed:', e);
+    el(`<h1>Call Break Local</h1><div class="panel">Something glitched displaying this screen.<div style="height:10px;"></div><button onclick="render()">Retry</button></div>`);
+  }
 }
 
 function renderWaiting(){
@@ -452,9 +591,13 @@ function renderGame(){
     ${trumpCornerHtml}
     <div class="scoreboard">${room.players.map(p=>`<div class="scorebox"><div class="l">${p.name}</div><div class="n">${(room.scores&&room.scores[p.uid])||0}</div></div>`).join('')}</div>
   </div>
+  ${renderRulePanel()}
+  ${renderAutoPlayPanel()}
+  ${renderSideOfPopup()}
   ${renderCancelBar()}`;
 
-  const active=(room.phase==='playing' && (room.currentTrick||[]).length<4) ? seatToAct() : -1;
+  const trick=displayTrick();
+  const active=(room.phase==='playing' && trick.length<4) ? displaySeatToAct() : -1;
   const showSideOf = room.phase!=='trump' && room.phase!=='cancelled' && room.phase!=='waiting';
   const seatBox=(i)=>{
     const p=room.players[i]; if(!p) return '<div></div>';
@@ -466,8 +609,19 @@ function renderGame(){
     else if(room.phase==='bidding'){ info = p.uid===myUid ? `bid ${myBidDraft}` : ((room.readyPlayers&&room.readyPlayers[p.uid])?'ready':'bidding\u2026'); }
     return `<div class="seat ${isActive?'active':''}"><div class="seatname">${p.name}${isDealer?' <span class="badge">dealer</span>':''}${sideBadge}</div><div class="seatinfo">${info}</div></div>`;
   };
-  const trickHtml=(room.currentTrick||[]).map(e=>{const si=suitInfo(e.card.suit);const pl=room.players[e.seat];return `<div class="center"><div class="card">${rankLabel(e.card.rank)}<span style="color:${si.red?'var(--danger)':'inherit'};">${si.sym}</span></div><div class="seatinfo">${pl?pl.name:''}</div></div>`;}).join('');
-  const midContent = (room.phase==='playing'||room.phase==='reveal') ? `<div class="row" style="justify-content:center;min-height:70px;align-items:center;">${trickHtml||'<span class="sub" style="margin:0;">trick in progress</span>'}</div>` : (room.phase==='cancelled'?`<div class="sub" style="color:var(--danger);margin:0;">round cancelled</div>`:`<div class="sub" style="margin:0;">table</div>`);
+  const trickBySlot={top:null,left:null,right:null,bottom:null};
+  trick.forEach(e=>{
+    const rel=((e.seat-mySeat())+4)%4;
+    const slot = rel===0?'bottom':rel===1?'right':rel===2?'top':'left';
+    trickBySlot[slot]=e;
+  });
+  const slotHtml=(slot)=>{
+    const e=trickBySlot[slot]; if(!e) return '';
+    const si=suitInfo(e.card.suit); const pl=room.players[e.seat];
+    return `<div class="trickslot ${slot}"><div class="card" style="cursor:default;">${rankLabel(e.card.rank)}<span style="color:${si.red?'var(--danger)':'inherit'};">${si.sym}</span></div><div class="seatinfo">${pl?pl.name:''}</div></div>`;
+  };
+  const anyCard = trick.length>0;
+  const midContent = (room.phase==='playing'||room.phase==='reveal') ? `<div class="trickgrid">${anyCard? slotHtml('top')+slotHtml('left')+slotHtml('right')+slotHtml('bottom') : '<div class="center sub" style="margin:0;grid-area:center;">trick in progress</div>'}</div>` : (room.phase==='cancelled'?`<div class="sub" style="color:var(--danger);margin:0;">round cancelled</div>`:`<div class="sub" style="margin:0;">table</div>`);
 
   html+=`<div class="table">
     <div style="grid-area:top;">${seatBox((2+mySeat())%4)}</div>
@@ -510,13 +664,17 @@ function renderControls(){
     const label = seat===mySeat() ? 'your turn \u2014 pick a card below' : (seat>=0 ? (room.players[seat]?.name||'?')+' is playing\u2026' : 'all four cards played \u2014 next trick starting\u2026');
     return `<div class="panel sub" style="margin:0;text-align:center;">Trick ${room.trickNum} of 13 \u00b7 ${label}</div>`;
   }
+  if(room.phase==='collecting'){
+    return `<div class="panel sub" style="margin:0;text-align:center;">Round finished \u2014 tallying scores\u2026</div>`;
+  }
   if(room.phase==='reveal'){
     const last=room.history[room.history.length-1];
     const totalBids=Object.values(last.bids).reduce((a,b)=>a+b,0);
-    const rows=room.players.map(p=>{const bid=last.bids[p.uid],won=last.tricksWon[p.uid],sc=last.roundScores[p.uid];const diff=won-bid;let note='';if(diff===1 && !(bid===8&&won===8)){note=' <span class="sub" style="margin:0;">(1 over, ok)</span>';}else if(diff>=2 && totalBids>=11){note=` <span class="sub" style="margin:0;">(${diff} over, forgiven \u2014 total bids ${totalBids})</span>`;}return `<tr><td>${p.name}</td><td class="center">${bid}</td><td class="center">${won}</td><td class="center" style="color:${sc>=0?'var(--success)':'var(--danger)'};">${sc>=0?'+':''}${sc}${(bid===8&&won===8)?' \u2605':''}${note}</td></tr>`;}).join('');
+    const wasLocal = last.ruleMode==='local';
+    const rows=room.players.map(p=>{const bid=last.bids[p.uid],won=last.tricksWon[p.uid],sc=last.roundScores[p.uid];const diff=won-bid;let note='';if(wasLocal && diff===1 && !(bid===8&&won===8)){note=' <span class="sub" style="margin:0;">(1 over, ok)</span>';}else if(wasLocal && diff>=2 && last.elevenMode && totalBids>=11){note=` <span class="sub" style="margin:0;">(${diff} over, forgiven \u2014 total bids ${totalBids})</span>`;}return `<tr><td>${p.name}</td><td class="center">${bid}</td><td class="center">${won}</td><td class="center" style="color:${sc>=0?'var(--success)':'var(--danger)'};">${sc>=0?'+':''}${sc}${(wasLocal&&bid===8&&won===8)?' \u2605':''}${note}</td></tr>`;}).join('');
     const nextDealer=room.players[(room.dealerSeat+1)%4];
     return `<div class="panel"><table class="hist"><tr class="sub"><td>Player</td><td class="center">Bid</td><td class="center">Won</td><td class="center">Score</td></tr>${rows}</table>
-    <div class="sub" style="margin:6px 0 10px;">Total bids this round: ${totalBids}</div>
+    <div class="sub" style="margin:6px 0 10px;">${wasLocal?`Total bids this round: ${totalBids}`:'Scored under Default rules'}</div>
     <div class="sub" style="margin:10px 0;">Next dealer: ${nextDealer?nextDealer.name:'?'} \u00b7 rotates anticlockwise</div>
     <div class="center"><button onclick="nextRound()">Play next round</button></div></div>`;
   }
@@ -525,22 +683,70 @@ function renderControls(){
 
 function renderHand(){
   if(room.phase==='trump'||room.phase==='cancelled'||room.phase==='reveal'||room.phase==='waiting') return '';
-  const hand=myHand.cards||[];
+  let hand=myHand.cards||[];
+  if(optimisticCard){ hand=hand.filter(c=>!(c.suit===optimisticCard.card.suit&&c.rank===optimisticCard.card.rank)); }
   let valid=hand;
   if(room.phase==='playing'){
-    valid = (mySeat()===seatToAct() && (room.currentTrick||[]).length<4) ? computeValidCards(hand, room.currentTrick||[], room.trumpSuit) : [];
+    valid = (!optimisticCard && mySeat()===seatToAct() && (room.currentTrick||[]).length<4) ? computeValidCards(hand, room.currentTrick||[], room.trumpSuit) : [];
   }
   return `<div class="row" style="justify-content:center;padding-top:12px;border-top:1px solid var(--felt-light);">${hand.map(c=>{const si=suitInfo(c.suit);const isValid=valid.some(v=>v.suit===c.suit&&v.rank===c.rank);const clickable=room.phase==='playing'&&isValid;return `<div class="card${clickable?'':' disabled'}" ${clickable?`onclick="playCard('${c.suit}',${c.rank})"`:''}>${rankLabel(c.rank)}<span style="color:${si.red?'var(--danger)':'inherit'};">${si.sym}</span></div>`;}).join('')}</div>`;
 }
 
 function toggleHistory(){ showHistory=!showHistory; render(); }
 
+function copyGameHistory(){
+  const data=JSON.stringify(room.history||[], null, 2);
+  navigator.clipboard.writeText(data).then(()=>{
+    alert('Full game history copied \u2014 paste it into your chat with Claude.');
+  }).catch(()=>{
+    alert('Could not copy automatically. Open your browser console or try again.');
+  });
+}
+
 function renderHistory(){
   if(!room.history || room.history.length===0) return '';
   if(!showHistory) return `<div class="center" style="margin-bottom:16px;"><button class="secondary" onclick="toggleHistory()">Show round history</button></div>`;
   const header=`<tr class="sub"><td>Round</td>${room.players.map(p=>`<td class="center">${p.name}</td>`).join('')}</tr>`;
-  const rows=room.history.map(h=>`<tr><td>${h.round}</td>${room.players.map(p=>{const sc=h.roundScores[p.uid];return `<td class="center" style="color:${sc>=0?'var(--success)':'var(--danger)'};">${sc>=0?'+':''}${sc}</td>`;}).join('')}</tr>`).join('');
-  return `<div class="panel"><div class="sub" style="margin-bottom:8px;display:flex;justify-content:space-between;align-items:center;">Round history <button class="secondary" onclick="toggleHistory()">Hide</button></div><table class="hist">${header}${rows}</table></div>`;
+  const rows=room.history.map(h=>`<tr><td>${h.round}</td>${room.players.map(p=>{
+    const sc=h.roundScores[p.uid];
+    const bid=h.bids?h.bids[p.uid]:null;
+    const won=h.tricksWon?h.tricksWon[p.uid]:null;
+    const bonus = h.ruleMode==='local' && bid===8 && won===8;
+    const detail = (bid!=null && won!=null) ? `<div class="sub" style="margin:0;font-size:10px;">bid ${bid}, won ${won}</div>` : '';
+    return `<td class="center" style="color:${sc>=0?'var(--success)':'var(--danger)'};">${sc>=0?'+':''}${sc}${bonus?' \u2605':''}${detail}</td>`;
+  }).join('')}</tr>`).join('');
+  return `<div class="panel"><div class="sub" style="margin-bottom:8px;display:flex;justify-content:space-between;align-items:center;">Round history <button class="secondary" onclick="toggleHistory()">Hide</button></div><table class="hist">${header}${rows}</table>
+  <div style="margin-top:10px;"><button class="secondary" onclick="copyGameHistory()">Copy full history (JSON)</button></div></div>`;
+}
+
+function renderRulePanel(){
+  if(room.phase==='waiting') return '';
+  const isHost = myUid===room.hostUid;
+  const label = room.ruleMode==='local' ? `Local rules \u00b7 11 mode ${room.elevenMode?'on':'off'}` : 'Default rules';
+  if(!isHost) return `<div class="sub" style="margin:-8px 0 16px;">${label}</div>`;
+  return `<div class="panel">
+    <div class="sub" style="margin-bottom:8px;">${label}</div>
+    <div class="row">
+      <button class="secondary" onclick="setRuleMode('default')">Default rules</button>
+      <button class="secondary" onclick="setRuleMode('local')">Local rules</button>
+      ${room.ruleMode==='local' ? `<button class="secondary" onclick="toggleElevenMode()">11 mode: ${room.elevenMode?'On':'Off'}</button>` : ''}
+    </div>
+  </div>`;
+}
+
+function renderAutoPlayPanel(){
+  if(room.phase==='waiting') return '';
+  return `<div class="panel" style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;">
+    <div class="sub" style="margin:0;">Auto-play (plays your trump pick, bid, and cards for you): <b style="color:${myAutoPlay?'var(--success)':'var(--muted)'};">${myAutoPlay?'On':'Off'}</b></div>
+    <button class="secondary" onclick="toggleMyAutoPlay()">${myAutoPlay?'Turn off':'Turn on'}</button>
+  </div>`;
+}
+
+function renderSideOfPopup(){
+  if(room.phase!=='bidding') return '';
+  const flagged=room.players.filter(p=>room.sideOf && room.sideOf[p.uid]);
+  if(flagged.length===0) return '';
+  return `<div class="panel" style="border:1px solid var(--gold);"><div class="sub" style="margin:0;">\u26a0\ufe0f Side of: ${flagged.map(p=>p.name).join(', ')} \u2014 void in one suit each (which one stays hidden). This clears once everyone's ready.</div></div>`;
 }
 
 function renderCancelBar(){
