@@ -26,7 +26,8 @@
   .row{display:flex;gap:10px;flex-wrap:wrap;}
   .col{display:flex;flex-direction:column;gap:8px;}
   .center{text-align:center;}
-  .table{display:grid;grid-template-columns:1fr 2fr 1fr;grid-template-rows:auto auto auto;grid-template-areas:". top ." "left mid right" ". bottom .";gap:10px;align-items:center;margin:18px 0;}
+  .table{position:relative;display:grid;grid-template-columns:1fr 2fr 1fr;grid-template-rows:auto auto auto;grid-template-areas:". top ." "left mid right" ". bottom .";gap:10px;align-items:center;margin:18px 0;}
+  .refresh-btn{position:absolute;top:-14px;right:0;z-index:3;width:32px;height:32px;border-radius:50%;background:var(--felt-light);border:1px solid var(--gold);color:var(--gold);font-size:16px;display:flex;align-items:center;justify-content:center;cursor:pointer;padding:0;}
   .trickgrid{display:grid;grid-template-columns:1fr 1fr 1fr;grid-template-rows:auto auto auto;grid-template-areas:". top ." "left center right" ". bottom .";gap:12px;align-items:center;justify-items:center;min-height:210px;}
   .trickslot{text-align:center;}
   .trickslot.top{grid-area:top;}
@@ -183,6 +184,17 @@ let botMoving=false;
 let optimisticCard=null;
 let myAutoPlay=false;
 function toggleMyAutoPlay(){ myAutoPlay=!myAutoPlay; render(); if(myAutoPlay && room) onRoomChange(); }
+function forceRefresh(){
+  handled.clear();
+  botMoving=false;
+  optimisticCard=null;
+  if(roomRef){
+    roomRef.get({source:'server'}).then(snap=>{ room=snap.data(); onRoomChange(); }).catch(()=>{});
+  }
+  if(myHandRef){
+    myHandRef.get({source:'server'}).then(snap=>{ if(snap.exists){ myHand=snap.data(); } render(); }).catch(()=>{});
+  }
+}
 async function autoSubmitMyBid(){
   const bid=estimateBid(myHand.cards, room.trumpSuit);
   myBidDraft=bid;
@@ -592,7 +604,6 @@ function renderGame(){
     <div class="scoreboard">${room.players.map(p=>`<div class="scorebox"><div class="l">${p.name}</div><div class="n">${(room.scores&&room.scores[p.uid])||0}</div></div>`).join('')}</div>
   </div>
   ${renderRulePanel()}
-  ${renderAutoPlayPanel()}
   ${renderSideOfPopup()}
   ${renderCancelBar()}`;
 
@@ -624,6 +635,7 @@ function renderGame(){
   const midContent = (room.phase==='playing'||room.phase==='reveal') ? `<div class="trickgrid">${anyCard? slotHtml('top')+slotHtml('left')+slotHtml('right')+slotHtml('bottom') : '<div class="center sub" style="margin:0;grid-area:center;">trick in progress</div>'}</div>` : (room.phase==='cancelled'?`<div class="sub" style="color:var(--danger);margin:0;">round cancelled</div>`:`<div class="sub" style="margin:0;">table</div>`);
 
   html+=`<div class="table">
+    <button class="refresh-btn" onclick="forceRefresh()" title="Reconnect and resync if the game seems stuck">\u21bb</button>
     <div style="grid-area:top;">${seatBox((2+mySeat())%4)}</div>
     <div style="grid-area:left;">${seatBox((3+mySeat())%4)}</div>
     <div style="grid-area:mid;">${midContent}</div>
@@ -723,22 +735,19 @@ function renderRulePanel(){
   if(room.phase==='waiting') return '';
   const isHost = myUid===room.hostUid;
   const label = room.ruleMode==='local' ? `Local rules \u00b7 11 mode ${room.elevenMode?'on':'off'}` : 'Default rules';
-  if(!isHost) return `<div class="sub" style="margin:-8px 0 16px;">${label}</div>`;
+  const autoBtn = `<button class="secondary" onclick="toggleMyAutoPlay()" title="Plays your trump pick, bid, and cards for you">Auto: ${myAutoPlay?'On':'Off'}</button>`;
+  if(!isHost) return `<div class="panel">
+    <div class="sub" style="margin-bottom:8px;">${label}</div>
+    <div class="row">${autoBtn}</div>
+  </div>`;
   return `<div class="panel">
     <div class="sub" style="margin-bottom:8px;">${label}</div>
     <div class="row">
       <button class="secondary" onclick="setRuleMode('default')">Default rules</button>
       <button class="secondary" onclick="setRuleMode('local')">Local rules</button>
       ${room.ruleMode==='local' ? `<button class="secondary" onclick="toggleElevenMode()">11 mode: ${room.elevenMode?'On':'Off'}</button>` : ''}
+      ${autoBtn}
     </div>
-  </div>`;
-}
-
-function renderAutoPlayPanel(){
-  if(room.phase==='waiting') return '';
-  return `<div class="panel" style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;">
-    <div class="sub" style="margin:0;">Auto-play (plays your trump pick, bid, and cards for you): <b style="color:${myAutoPlay?'var(--success)':'var(--muted)'};">${myAutoPlay?'On':'Off'}</b></div>
-    <button class="secondary" onclick="toggleMyAutoPlay()">${myAutoPlay?'Turn off':'Turn on'}</button>
   </div>`;
 }
 
