@@ -52,6 +52,10 @@
   .scorebox .l{font-size:11px;color:var(--muted);}
   .linkbox{display:flex;gap:8px;align-items:center;}
   .linkbox input{flex:1;}
+  .modal-overlay{position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.6);display:flex;align-items:center;justify-content:center;z-index:50;padding:20px;}
+  .modal-box{background:var(--felt-light);border:1px solid var(--gold);border-radius:14px;padding:20px;max-width:360px;width:100%;}
+  .log-trick{padding:8px 0;border-bottom:1px solid rgba(255,255,255,0.08);font-size:12px;line-height:1.6;}
+  .round-chip{padding:4px 10px;font-size:12px;font-weight:700;}
   ::placeholder{color:var(--muted);}
 </style>
 </head>
@@ -117,7 +121,6 @@ function unseenCards(myHand, playedCards){
   (playedCards||[]).forEach(c=>seen.add(cardKey(c)));
   return newDeck().filter(c=>!seen.has(cardKey(c)));
 }
-// True if no card still unaccounted-for (i.e. sitting in another player's hand) could beat this card if led now.
 function isSafeLead(card, myHand, playedCards, trump){
   const unseen=unseenCards(myHand, playedCards);
   if(card.suit===trump){
@@ -138,22 +141,18 @@ function botPickCard(hand,trick,trump,ctx){
   const playedCards = ctx.playedCards || [];
   const ruleMode = ctx.ruleMode || 'local';
   const hasBidInfo = bid!=null;
-  // How many wins are still "safe" (won't trigger the 2-over penalty)?
   const maxSafeWins = hasBidInfo ? (ruleMode==='local' ? bid+1 : bid) : Infinity;
   const wantsToWin = hasBidInfo && tricksWon < bid;
   const shouldAvoidWinning = hasBidInfo && tricksWon >= maxSafeWins;
 
   if(trick.length===0){
-    // Leading a fresh trick — full freedom over which card to play.
     const nonTrump=valid.filter(c=>c.suit!==trump);
     const pool = nonTrump.length ? nonTrump : valid;
     if(shouldAvoidWinning){
-      // Prefer a lead that can plausibly be beaten by someone else.
       const unsafe = pool.filter(c=>!isSafeLead(c, hand, playedCards, trump));
       const options = unsafe.length ? unsafe : pool;
       return options.reduce((a,b)=>a.rank<b.rank?a:b);
     }
-    // Otherwise, try to win cheaply: lead the lowest guaranteed-winning card if one exists.
     const safeWins = pool.filter(c=>isSafeLead(c, hand, playedCards, trump));
     if(safeWins.length) return safeWins.reduce((a,b)=>a.rank<b.rank?a:b);
     if(wantsToWin){
@@ -164,10 +163,6 @@ function botPickCard(hand,trick,trump,ctx){
     return pool.reduce((a,b)=>a.rank<b.rank?a:b);
   }
 
-  // Following — the forced-follow/must-beat/must-trump rules already dictate most of this.
-  // Where a genuine choice remains (which specific winning or discard card), prefer to
-  // conserve strength: play the lowest valid card, favoring a non-trump discard when trying
-  // to avoid winning further tricks.
   if(shouldAvoidWinning){
     const nonTrump=valid.filter(c=>c.suit!==trump);
     const pool=nonTrump.length?nonTrump:valid;
@@ -183,6 +178,9 @@ let localTrumpOptions=null, myBidDraft=5;
 let botMoving=false;
 let optimisticCard=null;
 let myAutoPlay=false;
+let showStartModal=false, pendingElevenMode=true;
+let showHistory=false, showLog=false, logRound=null;
+
 function toggleMyAutoPlay(){ myAutoPlay=!myAutoPlay; render(); if(myAutoPlay && room) onRoomChange(); }
 function forceRefresh(){
   handled.clear();
@@ -209,7 +207,6 @@ function displayTrick(){
   return t;
 }
 function displaySeatToAct(){ return ((room.leaderSeat||0) + displayTrick().length) % 4; }
-let showHistory=false;
 const pageLoadTs=Date.now();
 const handled=new Set();
 function once(key){ if(handled.has(key)) return false; handled.add(key); return true; }
@@ -237,11 +234,12 @@ function el(html){ document.getElementById('app').innerHTML=html; }
 function renderLanding(){
   if(roomId){
     el(`<h1>Call Break Local</h1><div class="sub">Joining room ${roomId}\u2026</div>
-    <div class="panel"><input type="text" id="nameInput" placeholder="Your name" /><div style="height:10px;"></div><button onclick="doJoin()">Join room</button></div>`);
+    <div class="panel"><input type="text" id="nameInput" placeholder="Your name (required)" /><div id="nameError" style="color:var(--danger);font-size:12px;margin-top:6px;"></div><div style="height:10px;"></div><button onclick="doJoin()">Join room</button></div>`);
   } else {
     el(`<h1>Call Break Local</h1><div class="sub">Create a room, choose how many real players you need, then send the link to the rest.</div>
     <div class="panel">
-      <input type="text" id="nameInput" placeholder="Your name" />
+      <input type="text" id="nameInput" placeholder="Your name (required)" />
+      <div id="nameError" style="color:var(--danger);font-size:12px;margin-top:6px;"></div>
       <div style="height:10px;"></div>
       <div class="col">
         <button onclick="doCreate(1)">Just me + 3 computer players</button>
@@ -253,8 +251,22 @@ function renderLanding(){
   }
 }
 
+function getValidatedName(){
+  const input=document.getElementById('nameInput');
+  const val=input?input.value.trim():'';
+  const errEl=document.getElementById('nameError');
+  if(!val){
+    if(errEl) errEl.textContent='Please enter your name before continuing.';
+    if(input) input.focus();
+    return null;
+  }
+  if(errEl) errEl.textContent='';
+  return val;
+}
+
 async function doCreate(humanCount){
-  const name=document.getElementById('nameInput').value.trim()||'Player';
+  const name=getValidatedName();
+  if(!name) return;
   myName=name;
   roomId=Math.random().toString(36).slice(2,6).toUpperCase();
   roomRef=db.collection('rooms').doc(roomId);
@@ -391,7 +403,7 @@ async function performDeal(){
       for(let i=0;i<4;i++) hands[i]=sortHand(deck.slice(i*13,(i+1)*13), d.trumpSuit);
       const noTrumpVoid=hands.some(h=>h.filter(c=>c.suit===d.trumpSuit).length===0);
       const noFaceCard=hands.some(h=>h.filter(c=>c.rank>=11).length===0);
-      const allFourAces = d.ruleMode==='local' && hands.some(h=>SUITS.every(s=>h.some(c=>c.suit===s.key&&c.rank===14)));
+      const allFourAces = hands.some(h=>SUITS.every(s=>h.some(c=>c.suit===s.key&&c.rank===14)));
       if(noTrumpVoid||noFaceCard||allFourAces){
         const reason = noTrumpVoid?'a player had no trump cards':noFaceCard?'a player had no ace, king, queen, or jack':'a player was dealt all four Aces';
         tx.update(roomRef, {phase:'cancelled', cancelReason: reason, redealAttempt:(d.redealAttempt||0)+1});
@@ -453,29 +465,28 @@ async function tryFinishRound(){
     const uids=d.players.map(p=>p.uid);
     if(!uids.every(u=>d.revealedBids&&d.revealedBids[u]!=null)) return;
     const totalBids=uids.reduce((sum,u)=>sum+(d.revealedBids[u]||0),0);
-    const isLocal = d.ruleMode==='local';
     const roundScores={}; const scores={...d.scores};
     uids.forEach(u=>{
       const bid=d.revealedBids[u], won=d.tricksWon[u]||0, diff=won-bid;
       let sc;
-      if(!isLocal){
-        sc = diff===0 ? bid : -bid;
-      } else {
-        if(diff<0) sc=-bid;
-        else if(diff<=1) sc=bid;
-        else sc = (d.elevenMode && totalBids>=11) ? bid : -bid;
-        if(bid===8 && sc===8) sc+=8;
-      }
+      if(diff<0) sc=-bid;
+      else if(diff<=1) sc=bid;
+      else sc = (d.elevenMode && totalBids>=11) ? bid : -bid;
+      if(bid===8 && sc===8) sc+=8;
       roundScores[u]=sc; scores[u]=(scores[u]||0)+sc;
     });
-    const historyEntry={round:d.round, bids:d.revealedBids, tricksWon:d.tricksWon, roundScores, ruleMode:d.ruleMode, elevenMode:d.elevenMode, trumpSuit:d.trumpSuit, dealerSeat:d.dealerSeat, trumpChooserSeat:d.trumpChooserSeat, players:d.players.map(p=>({uid:p.uid,name:p.name,isBot:!!p.isBot})), tricks:d.currentRoundTricks||[]};
+    const historyEntry={round:d.round, bids:d.revealedBids, tricksWon:d.tricksWon, roundScores, ruleMode:'local', elevenMode:d.elevenMode, trumpSuit:d.trumpSuit, dealerSeat:d.dealerSeat, trumpChooserSeat:d.trumpChooserSeat, players:d.players.map(p=>({uid:p.uid,name:p.name,isBot:!!p.isBot})), tricks:d.currentRoundTricks||[]};
     tx.update(roomRef,{phase:'reveal', roundScores, scores, history:(d.history||[]).concat([historyEntry])});
   });
 }
 
-async function startGame(){
+function openStartModal(){ showStartModal=true; render(); }
+function closeStartModal(){ showStartModal=false; render(); }
+function toggleStartElevenMode(){ pendingElevenMode=!pendingElevenMode; render(); }
+async function confirmStartGame(){
   const scores={}; room.players.forEach(p=>scores[p.uid]=0);
-  await roomRef.update({phase:'trump', round:1, dealSeq:1, dealerSeat:0, trumpChooserSeat:1, trumpSuit:null, scores});
+  await roomRef.update({phase:'trump', round:1, dealSeq:1, dealerSeat:0, trumpChooserSeat:1, trumpSuit:null, scores, elevenMode: pendingElevenMode, ruleMode:'local'});
+  showStartModal=false;
 }
 
 async function chooseTrump(idx){
@@ -543,15 +554,6 @@ async function nextRound(){
   });
 }
 
-async function setRuleMode(mode){
-  const scores={}; room.players.forEach(p=>scores[p.uid]=0);
-  await roomRef.update({ruleMode:mode, scores, history:[]});
-}
-async function toggleElevenMode(){
-  const scores={}; room.players.forEach(p=>scores[p.uid]=0);
-  await roomRef.update({elevenMode: !room.elevenMode, scores, history:[]});
-}
-
 async function requestCancelRound(){
   const newId=(room.cancelRequestId||0)+1;
   await roomRef.update({cancelRequestId:newId, cancelRequest:{id:newId, votes:{[myUid]:true}}});
@@ -581,16 +583,34 @@ function render(){
   }
 }
 
+function renderStartModal(){
+  return `<div class="modal-overlay">
+    <div class="modal-box">
+      <h1 style="font-size:20px;margin-bottom:6px;">Choose rules</h1>
+      <div class="sub" style="margin-bottom:14px;">Set this before the round starts \u2014 it can't be changed once play begins. All games use Local rules.</div>
+      <div class="row" style="margin-bottom:16px;">
+        <button class="secondary" onclick="toggleStartElevenMode()">11 mode: ${pendingElevenMode?'On':'Off'}</button>
+      </div>
+      <div class="row">
+        <button onclick="confirmStartGame()">Start round</button>
+        <button class="secondary" onclick="closeStartModal()">Cancel</button>
+      </div>
+    </div>
+  </div>`;
+}
+
 function renderWaiting(){
   const link=location.origin+location.pathname+'?room='+roomId;
   const list=room.players.map(p=>`<div class="seat"><div class="seatname">${p.name}${p.uid===room.hostUid?' <span class="badge">host</span>':''}${p.isBot?' <span class="badge">computer</span>':''}</div></div>`).join('');
   const canStart = room.hostUid===myUid && room.players.length===4;
+  const modal = showStartModal ? renderStartModal() : '';
   el(`<h1>Call Break Local</h1><div class="sub">Room ${roomId} \u2014 ${room.players.length}/4 seats filled</div>
   <div class="panel">
     <div class="linkbox"><input type="text" readonly value="${link}" onclick="this.select()" /><button class="secondary" onclick="navigator.clipboard.writeText('${link}')">Copy link</button></div>
   </div>
   <div class="row" style="margin-bottom:16px;">${list}</div>
-  ${room.hostUid===myUid ? `<button ${canStart?'':'disabled'} onclick="startGame()">Start game</button>` : `<div class="sub">Waiting for the host to start\u2026</div>`}`);
+  ${room.hostUid===myUid ? `<button ${canStart?'':'disabled'} onclick="openStartModal()">Start game</button>` : `<div class="sub">Waiting for the host to start\u2026</div>`}
+  ${modal}`);
 }
 
 function renderGame(){
@@ -682,11 +702,10 @@ function renderControls(){
   if(room.phase==='reveal'){
     const last=room.history[room.history.length-1];
     const totalBids=Object.values(last.bids).reduce((a,b)=>a+b,0);
-    const wasLocal = last.ruleMode==='local';
-    const rows=room.players.map(p=>{const bid=last.bids[p.uid],won=last.tricksWon[p.uid],sc=last.roundScores[p.uid];const diff=won-bid;let note='';if(wasLocal && diff===1 && !(bid===8&&won===8)){note=' <span class="sub" style="margin:0;">(1 over, ok)</span>';}else if(wasLocal && diff>=2 && last.elevenMode && totalBids>=11){note=` <span class="sub" style="margin:0;">(${diff} over, forgiven \u2014 total bids ${totalBids})</span>`;}return `<tr><td>${p.name}</td><td class="center">${bid}</td><td class="center">${won}</td><td class="center" style="color:${sc>=0?'var(--success)':'var(--danger)'};">${sc>=0?'+':''}${sc}${(wasLocal&&bid===8&&won===8)?' \u2605':''}${note}</td></tr>`;}).join('');
+    const rows=room.players.map(p=>{const bid=last.bids[p.uid],won=last.tricksWon[p.uid],sc=last.roundScores[p.uid];const diff=won-bid;let note='';if(diff===1 && !(bid===8&&won===8)){note=' <span class="sub" style="margin:0;">(1 over, ok)</span>';}else if(diff>=2 && last.elevenMode && totalBids>=11){note=` <span class="sub" style="margin:0;">(${diff} over, forgiven \u2014 total bids ${totalBids})</span>`;}return `<tr><td>${p.name}</td><td class="center">${bid}</td><td class="center">${won}</td><td class="center" style="color:${sc>=0?'var(--success)':'var(--danger)'};">${sc>=0?'+':''}${sc}${(bid===8&&won===8)?' \u2605':''}${note}</td></tr>`;}).join('');
     const nextDealer=room.players[(room.dealerSeat+1)%4];
     return `<div class="panel"><table class="hist"><tr class="sub"><td>Player</td><td class="center">Bid</td><td class="center">Won</td><td class="center">Score</td></tr>${rows}</table>
-    <div class="sub" style="margin:6px 0 10px;">${wasLocal?`Total bids this round: ${totalBids}`:'Scored under Default rules'}</div>
+    <div class="sub" style="margin:6px 0 10px;">Total bids this round: ${totalBids}</div>
     <div class="sub" style="margin:10px 0;">Next dealer: ${nextDealer?nextDealer.name:'?'} \u00b7 rotates anticlockwise</div>
     <div class="center"><button onclick="nextRound()">Play next round</button></div></div>`;
   }
@@ -705,6 +724,12 @@ function renderHand(){
 }
 
 function toggleHistory(){ showHistory=!showHistory; render(); }
+function toggleLog(){
+  showLog=!showLog;
+  if(showLog){ logRound=null; }
+  render();
+}
+function selectLogRound(rn){ logRound=rn; render(); }
 
 function copyGameHistory(){
   const data=JSON.stringify(room.history||[], null, 2);
@@ -715,6 +740,25 @@ function copyGameHistory(){
   });
 }
 
+function formatCard(c){
+  const si=suitInfo(c.suit);
+  return `${rankLabel(c.rank)}<span style="color:${si.red?'var(--danger)':'inherit'};">${si.sym}</span>`;
+}
+function nameForEntry(entry, uid){
+  const p=(entry.players||[]).find(p=>p.uid===uid);
+  return p ? p.name : '?';
+}
+function renderTrickLogBody(entry){
+  if(!entry.tricks || entry.tricks.length===0) return `<div class="sub" style="margin:0;">No trick-by-trick data saved for this round.</div>`;
+  const sorted=entry.tricks.slice().sort((a,b)=>a.trickNum-b.trickNum);
+  return sorted.map(t=>{
+    const leaderName=nameForEntry(entry, t.plays[0]?.uid);
+    const winnerName=nameForEntry(entry, t.winnerUid);
+    const playsStr=t.plays.map(pl=>`${nameForEntry(entry,pl.uid)}: ${formatCard(pl.card)}`).join(' &nbsp;\u00b7&nbsp; ');
+    return `<div class="log-trick"><b>Trick ${t.trickNum}</b> <span class="sub" style="margin:0;">(led by ${leaderName})</span><br>${playsStr}<br><span class="sub" style="margin:0;">Winner: ${winnerName}</span></div>`;
+  }).join('');
+}
+
 function renderHistory(){
   if(!room.history || room.history.length===0) return '';
   if(!showHistory) return `<div class="center" style="margin-bottom:16px;"><button class="secondary" onclick="toggleHistory()">Show round history</button></div>`;
@@ -723,31 +767,36 @@ function renderHistory(){
     const sc=h.roundScores[p.uid];
     const bid=h.bids?h.bids[p.uid]:null;
     const won=h.tricksWon?h.tricksWon[p.uid]:null;
-    const bonus = h.ruleMode==='local' && bid===8 && won===8;
+    const bonus = bid===8 && won===8;
     const detail = (bid!=null && won!=null) ? `<div class="sub" style="margin:0;font-size:10px;">bid ${bid}, won ${won}</div>` : '';
     return `<td class="center" style="color:${sc>=0?'var(--success)':'var(--danger)'};">${sc>=0?'+':''}${sc}${bonus?' \u2605':''}${detail}</td>`;
   }).join('')}</tr>`).join('');
+
+  let logSection='';
+  if(showLog){
+    const roundNums=room.history.map(h=>h.round);
+    const activeRound = logRound || roundNums[roundNums.length-1];
+    const chips=roundNums.map(rn=>`<button class="secondary round-chip" style="${rn===activeRound?'background:var(--gold);color:var(--ink);':''}" onclick="selectLogRound(${rn})">${rn}</button>`).join('');
+    const entry=room.history.find(h=>h.round===activeRound);
+    logSection=`<div style="margin-top:14px;border-top:1px solid var(--felt-light);padding-top:12px;">
+      <div class="sub" style="margin-bottom:8px;">Trick-by-trick log</div>
+      <div class="row" style="margin-bottom:8px;">${chips}</div>
+      ${entry?renderTrickLogBody(entry):''}
+    </div>`;
+  }
+
   return `<div class="panel"><div class="sub" style="margin-bottom:8px;display:flex;justify-content:space-between;align-items:center;">Round history <button class="secondary" onclick="toggleHistory()">Hide</button></div><table class="hist">${header}${rows}</table>
-  <div style="margin-top:10px;"><button class="secondary" onclick="copyGameHistory()">Copy full history (JSON)</button></div></div>`;
+  <div style="margin-top:10px;" class="row"><button class="secondary" onclick="toggleLog()">${showLog?'Hide log':'Show log'}</button><button class="secondary" onclick="copyGameHistory()">Copy full history (JSON)</button></div>
+  ${logSection}</div>`;
 }
 
 function renderRulePanel(){
   if(room.phase==='waiting') return '';
-  const isHost = myUid===room.hostUid;
-  const label = room.ruleMode==='local' ? `Local rules \u00b7 11 mode ${room.elevenMode?'on':'off'}` : 'Default rules';
+  const label = `Local rules \u00b7 11 mode ${room.elevenMode?'on':'off'}`;
   const autoBtn = `<button class="secondary" onclick="toggleMyAutoPlay()" title="Plays your trump pick, bid, and cards for you">Auto: ${myAutoPlay?'On':'Off'}</button>`;
-  if(!isHost) return `<div class="panel">
-    <div class="sub" style="margin-bottom:8px;">${label}</div>
-    <div class="row">${autoBtn}</div>
-  </div>`;
   return `<div class="panel">
     <div class="sub" style="margin-bottom:8px;">${label}</div>
-    <div class="row">
-      <button class="secondary" onclick="setRuleMode('default')">Default rules</button>
-      <button class="secondary" onclick="setRuleMode('local')">Local rules</button>
-      ${room.ruleMode==='local' ? `<button class="secondary" onclick="toggleElevenMode()">11 mode: ${room.elevenMode?'On':'Off'}</button>` : ''}
-      ${autoBtn}
-    </div>
+    <div class="row">${autoBtn}</div>
   </div>`;
 }
 
