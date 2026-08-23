@@ -287,7 +287,8 @@ async function doCreate(humanCount){
 }
 
 async function doJoin(){
-  const name=document.getElementById('nameInput').value.trim()||'Player';
+  const name=getValidatedName();
+  if(!name) return;
   myName=name;
   roomRef=db.collection('rooms').doc(roomId);
   myHandRef=roomRef.collection('hands').doc(myUid);
