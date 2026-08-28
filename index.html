@@ -180,6 +180,7 @@ let optimisticCard=null;
 let myAutoPlay=false;
 let showStartModal=false, pendingElevenMode=true;
 let showHistory=false, showLog=false, logRound=null;
+let landingMode='choice';
 
 function toggleMyAutoPlay(){ myAutoPlay=!myAutoPlay; render(); if(myAutoPlay && room) onRoomChange(); }
 function forceRefresh(){
@@ -235,7 +236,9 @@ function renderLanding(){
   if(roomId){
     el(`<h1>Call Break Local</h1><div class="sub">Joining room ${roomId}\u2026</div>
     <div class="panel"><input type="text" id="nameInput" placeholder="Your name (required)" /><div id="nameError" style="color:var(--danger);font-size:12px;margin-top:6px;"></div><div style="height:10px;"></div><button onclick="doJoin()">Join room</button></div>`);
-  } else {
+    return;
+  }
+  if(landingMode==='host'){
     el(`<h1>Call Break Local</h1><div class="sub">Create a room, choose how many real players you need, then send the link to the rest.</div>
     <div class="panel">
       <input type="text" id="nameInput" placeholder="Your name (required)" />
@@ -247,9 +250,34 @@ function renderLanding(){
         <button onclick="doCreate(3)">3 of us + 1 computer player</button>
         <button onclick="doCreate(4)">4 of us \u2014 fully online</button>
       </div>
-    </div>`);
+    </div>
+    <div class="center"><button class="secondary" onclick="backToChoice()">Back</button></div>`);
+    return;
   }
+  if(landingMode==='join'){
+    el(`<h1>Call Break Local</h1><div class="sub">Enter the room code your host shared with you.</div>
+    <div class="panel">
+      <input type="text" id="nameInput" placeholder="Your name (required)" />
+      <div style="height:10px;"></div>
+      <input type="text" id="roomCodeInput" placeholder="Room code" style="text-transform:uppercase;" />
+      <div id="nameError" style="color:var(--danger);font-size:12px;margin-top:6px;"></div>
+      <div style="height:10px;"></div>
+      <button onclick="doJoinByCode()">Join room</button>
+    </div>
+    <div class="center"><button class="secondary" onclick="backToChoice()">Back</button></div>`);
+    return;
+  }
+  el(`<h1>Call Break Local</h1><div class="sub">Play Call Break online with friends and computer players.</div>
+  <div class="panel">
+    <div class="col">
+      <button onclick="showHostFlow()">Host a game</button>
+      <button class="secondary" onclick="showJoinFlow()">Join a game</button>
+    </div>
+  </div>`);
 }
+function showHostFlow(){ landingMode='host'; render(); }
+function showJoinFlow(){ landingMode='join'; render(); }
+function backToChoice(){ landingMode='choice'; render(); }
 
 function getValidatedName(){
   const input=document.getElementById('nameInput');
@@ -284,6 +312,20 @@ async function doCreate(humanCount){
   });
   history.replaceState(null,'','?room='+roomId);
   subscribe();
+}
+
+async function doJoinByCode(){
+  const codeInput=document.getElementById('roomCodeInput');
+  const code=codeInput?codeInput.value.trim().toUpperCase():'';
+  if(!code){
+    const errEl=document.getElementById('nameError');
+    if(errEl) errEl.textContent='Please enter the room code.';
+    if(codeInput) codeInput.focus();
+    return;
+  }
+  roomId=code;
+  history.replaceState(null,'','?room='+roomId);
+  await doJoin();
 }
 
 async function doJoin(){
@@ -483,7 +525,7 @@ async function tryFinishRound(){
 
 function openStartModal(){ showStartModal=true; render(); }
 function closeStartModal(){ showStartModal=false; render(); }
-function toggleStartElevenMode(){ pendingElevenMode=!pendingElevenMode; render(); }
+function setStartElevenMode(v){ pendingElevenMode=v; render(); }
 async function confirmStartGame(){
   const scores={}; room.players.forEach(p=>scores[p.uid]=0);
   await roomRef.update({phase:'trump', round:1, dealSeq:1, dealerSeat:0, trumpChooserSeat:1, trumpSuit:null, scores, elevenMode: pendingElevenMode, ruleMode:'local'});
@@ -589,8 +631,10 @@ function renderStartModal(){
     <div class="modal-box">
       <h1 style="font-size:20px;margin-bottom:6px;">Choose rules</h1>
       <div class="sub" style="margin-bottom:14px;">Set this before the round starts \u2014 it can't be changed once play begins. All games use Local rules.</div>
+      <div class="sub" style="margin-bottom:8px;">11 mode</div>
       <div class="row" style="margin-bottom:16px;">
-        <button class="secondary" onclick="toggleStartElevenMode()">11 mode: ${pendingElevenMode?'On':'Off'}</button>
+        <button class="${pendingElevenMode?'':'secondary'}" onclick="setStartElevenMode(true)">On</button>
+        <button class="${pendingElevenMode?'secondary':''}" onclick="setStartElevenMode(false)">Off</button>
       </div>
       <div class="row">
         <button onclick="confirmStartGame()">Start round</button>
@@ -773,31 +817,45 @@ function renderHistory(){
     return `<td class="center" style="color:${sc>=0?'var(--success)':'var(--danger)'};">${sc>=0?'+':''}${sc}${bonus?' \u2605':''}${detail}</td>`;
   }).join('')}</tr>`).join('');
 
-  let logSection='';
-  if(showLog){
-    const roundNums=room.history.map(h=>h.round);
-    const activeRound = logRound || roundNums[roundNums.length-1];
-    const chips=roundNums.map(rn=>`<button class="secondary round-chip" style="${rn===activeRound?'background:var(--gold);color:var(--ink);':''}" onclick="selectLogRound(${rn})">${rn}</button>`).join('');
-    const entry=room.history.find(h=>h.round===activeRound);
-    logSection=`<div style="margin-top:14px;border-top:1px solid var(--felt-light);padding-top:12px;">
-      <div class="sub" style="margin-bottom:8px;">Trick-by-trick log</div>
-      <div class="row" style="margin-bottom:8px;">${chips}</div>
-      ${entry?renderTrickLogBody(entry):''}
-    </div>`;
-  }
-
   return `<div class="panel"><div class="sub" style="margin-bottom:8px;display:flex;justify-content:space-between;align-items:center;">Round history <button class="secondary" onclick="toggleHistory()">Hide</button></div><table class="hist">${header}${rows}</table>
-  <div style="margin-top:10px;" class="row"><button class="secondary" onclick="toggleLog()">${showLog?'Hide log':'Show log'}</button><button class="secondary" onclick="copyGameHistory()">Copy full history (JSON)</button></div>
-  ${logSection}</div>`;
+  <div style="margin-top:10px;"><button class="secondary" onclick="copyGameHistory()">Copy full history (JSON)</button></div></div>`;
+}
+
+function getLogEntries(){
+  const entries=(room.history||[]).slice();
+  if(room.round && room.round>0 && ['bidding','playing','collecting'].includes(room.phase)){
+    entries.push({round: room.round, players: room.players, tricks: room.currentRoundTricks||[], live:true});
+  }
+  return entries;
+}
+
+function renderLogSection(){
+  if(!showLog) return '';
+  const entries=getLogEntries();
+  if(entries.length===0) return `<div class="sub" style="margin:10px 0 0;">No rounds started yet.</div>`;
+  const liveEntry=entries.find(e=>e.live);
+  if(logRound==null){ logRound = liveEntry ? liveEntry.round : entries[entries.length-1].round; }
+  const chips=entries.map(e=>{
+    const isActive=e.round===logRound;
+    const liveTag=e.live?' <span style="color:var(--gold);">\u25CF live</span>':'';
+    return `<button class="secondary round-chip" style="${isActive?'background:var(--gold);color:var(--ink);':''}" onclick="selectLogRound(${e.round})">${e.round}${liveTag}</button>`;
+  }).join('');
+  const entry=entries.find(e=>e.round===logRound) || entries[entries.length-1];
+  return `<div style="margin-top:12px;border-top:1px solid var(--felt-light);padding-top:12px;">
+    <div class="row" style="margin-bottom:8px;">${chips}</div>
+    ${entry?renderTrickLogBody(entry):''}
+  </div>`;
 }
 
 function renderRulePanel(){
   if(room.phase==='waiting') return '';
   const label = `Local rules \u00b7 11 mode ${room.elevenMode?'on':'off'}`;
   const autoBtn = `<button class="secondary" onclick="toggleMyAutoPlay()" title="Plays your trump pick, bid, and cards for you">Auto: ${myAutoPlay?'On':'Off'}</button>`;
+  const logBtn = `<button class="secondary" onclick="toggleLog()">${showLog?'Hide log':'Log'}</button>`;
   return `<div class="panel">
     <div class="sub" style="margin-bottom:8px;">${label}</div>
-    <div class="row">${autoBtn}</div>
+    <div class="row">${autoBtn}${logBtn}</div>
+    ${renderLogSection()}
   </div>`;
 }
 
