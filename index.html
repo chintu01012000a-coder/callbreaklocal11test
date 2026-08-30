@@ -406,7 +406,8 @@ function onRoomChange(){
     }
   }
   if(room.phase==='playing' && (room.currentTrick||[]).length===4){
-    onceAsync('trickfull-'+seq+'-'+room.trickNum, ()=>new Promise(res=>setTimeout(()=>resolveCurrentTrick().then(res).catch(res),2000)));
+    const trickDelay = room.trickNum>=13 ? 300 : 2000;
+    onceAsync('trickfull-'+seq+'-'+room.trickNum, ()=>new Promise(res=>setTimeout(()=>resolveCurrentTrick().then(res).catch(res),trickDelay)));
   }
   if(room.cancelRequest){
     room.players.forEach(p=>{
