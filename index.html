@@ -52,10 +52,10 @@
   .scorebox .l{font-size:11px;color:var(--muted);}
   .linkbox{display:flex;gap:8px;align-items:center;}
   .linkbox input{flex:1;}
-  .modal-overlay{position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.6);display:flex;align-items:center;justify-content:center;z-index:50;padding:20px;}
+  .modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,0.6);display:flex;align-items:center;justify-content:center;z-index:50;padding:20px;}
   .modal-box{background:var(--felt-light);border:1px solid var(--gold);border-radius:14px;padding:20px;max-width:360px;width:100%;}
-  .log-trick{padding:8px 0;border-bottom:1px solid rgba(255,255,255,0.08);font-size:12px;line-height:1.6;}
-  .round-chip{padding:4px 10px;font-size:12px;font-weight:700;}
+  .log-trick{padding:8px 0;border-bottom:1px solid rgba(255,255,255,0.08);font-size:12px;}
+  .round-chip{padding:5px 11px;font-size:12px;}
   ::placeholder{color:var(--muted);}
 </style>
 </head>
@@ -139,9 +139,8 @@ function botPickCard(hand,trick,trump,ctx){
   const bid = ctx.bid;
   const tricksWon = ctx.tricksWon || 0;
   const playedCards = ctx.playedCards || [];
-  const ruleMode = ctx.ruleMode || 'local';
   const hasBidInfo = bid!=null;
-  const maxSafeWins = hasBidInfo ? (ruleMode==='local' ? bid+1 : bid) : Infinity;
+  const maxSafeWins = hasBidInfo ? bid+1 : Infinity;
   const wantsToWin = hasBidInfo && tricksWon < bid;
   const shouldAvoidWinning = hasBidInfo && tricksWon >= maxSafeWins;
 
@@ -399,7 +398,7 @@ function onRoomChange(){
         } else {
           const myTricksWon=(room.tricksWon&&room.tricksWon[myUid])||0;
           const myPlayedCards=(room.playedCards||[]).concat((room.currentTrick||[]).map(e=>e.card));
-          chosen=botPickCard(myHand.cards, room.currentTrick||[], room.trumpSuit, {bid: myHand.bid, tricksWon: myTricksWon, ruleMode: room.ruleMode, playedCards: myPlayedCards});
+          chosen=botPickCard(myHand.cards, room.currentTrick||[], room.trumpSuit, {bid: myHand.bid, tricksWon: myTricksWon, playedCards: myPlayedCards});
         }
         onceAsync('autoplay-'+seq+'-'+room.trickNum+'-'+(room.currentTrick||[]).length, ()=>new Promise(res=>setTimeout(()=>{ playCard(chosen.suit, chosen.rank).then(res).catch(res); }, 300)));
       }
@@ -489,7 +488,7 @@ async function doBotPlay(uid, seat){
   const bid=snap.data().bid;
   const tricksWon=(room.tricksWon&&room.tricksWon[uid])||0;
   const playedCards=(room.playedCards||[]).concat((room.currentTrick||[]).map(e=>e.card));
-  const card=botPickCard(hand, room.currentTrick||[], room.trumpSuit, {bid, tricksWon, ruleMode: room.ruleMode, playedCards});
+  const card=botPickCard(hand, room.currentTrick||[], room.trumpSuit, {bid, tricksWon, playedCards});
   await executePlay(uid, seat, card, hand);
 }
 
@@ -519,7 +518,7 @@ async function tryFinishRound(){
       if(bid===8 && sc===8) sc+=8;
       roundScores[u]=sc; scores[u]=(scores[u]||0)+sc;
     });
-    const historyEntry={round:d.round, bids:d.revealedBids, tricksWon:d.tricksWon, roundScores, ruleMode:'local', elevenMode:d.elevenMode, trumpSuit:d.trumpSuit, dealerSeat:d.dealerSeat, trumpChooserSeat:d.trumpChooserSeat, players:d.players.map(p=>({uid:p.uid,name:p.name,isBot:!!p.isBot})), tricks:d.currentRoundTricks||[]};
+    const historyEntry={round:d.round, bids:d.revealedBids, tricksWon:d.tricksWon, roundScores, elevenMode:d.elevenMode, trumpSuit:d.trumpSuit, dealerSeat:d.dealerSeat, trumpChooserSeat:d.trumpChooserSeat, players:d.players.map(p=>({uid:p.uid,name:p.name,isBot:!!p.isBot})), tricks:d.currentRoundTricks||[]};
     tx.update(roomRef,{phase:'reveal', roundScores, scores, history:(d.history||[]).concat([historyEntry])});
   });
 }
@@ -649,14 +648,13 @@ function renderWaiting(){
   const link=location.origin+location.pathname+'?room='+roomId;
   const list=room.players.map(p=>`<div class="seat"><div class="seatname">${p.name}${p.uid===room.hostUid?' <span class="badge">host</span>':''}${p.isBot?' <span class="badge">computer</span>':''}</div></div>`).join('');
   const canStart = room.hostUid===myUid && room.players.length===4;
-  const modal = showStartModal ? renderStartModal() : '';
   el(`<h1>Call Break Local</h1><div class="sub">Room ${roomId} \u2014 ${room.players.length}/4 seats filled</div>
   <div class="panel">
     <div class="linkbox"><input type="text" readonly value="${link}" onclick="this.select()" /><button class="secondary" onclick="navigator.clipboard.writeText('${link}')">Copy link</button></div>
   </div>
   <div class="row" style="margin-bottom:16px;">${list}</div>
   ${room.hostUid===myUid ? `<button ${canStart?'':'disabled'} onclick="openStartModal()">Start game</button>` : `<div class="sub">Waiting for the host to start\u2026</div>`}
-  ${modal}`);
+  ${showStartModal ? renderStartModal() : ''}`);
 }
 
 function renderGame(){
@@ -791,35 +789,18 @@ function formatCard(c){
   return `${rankLabel(c.rank)}<span style="color:${si.red?'var(--danger)':'inherit'};">${si.sym}</span>`;
 }
 function nameForEntry(entry, uid){
-  const p=(entry.players||[]).find(p=>p.uid===uid);
+  const p=(entry.players||[]).find(pp=>pp.uid===uid);
   return p ? p.name : '?';
 }
 function renderTrickLogBody(entry){
-  if(!entry.tricks || entry.tricks.length===0) return `<div class="sub" style="margin:0;">No trick-by-trick data saved for this round.</div>`;
+  if(!entry.tricks || entry.tricks.length===0) return `<div class="sub" style="margin:0;">No tricks played yet this round.</div>`;
   const sorted=entry.tricks.slice().sort((a,b)=>a.trickNum-b.trickNum);
   return sorted.map(t=>{
-    const leaderName=nameForEntry(entry, t.plays[0]?.uid);
-    const winnerName=nameForEntry(entry, t.winnerUid);
-    const playsStr=t.plays.map(pl=>`${nameForEntry(entry,pl.uid)}: ${formatCard(pl.card)}`).join(' &nbsp;\u00b7&nbsp; ');
+    const leaderName = t.plays && t.plays[0] ? nameForEntry(entry, t.plays[0].uid) : '?';
+    const winnerName = nameForEntry(entry, t.winnerUid);
+    const playsStr = (t.plays||[]).map(pl=>`${nameForEntry(entry,pl.uid)}: ${formatCard(pl.card)}`).join(' &nbsp;&nbsp; ');
     return `<div class="log-trick"><b>Trick ${t.trickNum}</b> <span class="sub" style="margin:0;">(led by ${leaderName})</span><br>${playsStr}<br><span class="sub" style="margin:0;">Winner: ${winnerName}</span></div>`;
   }).join('');
-}
-
-function renderHistory(){
-  if(!room.history || room.history.length===0) return '';
-  if(!showHistory) return `<div class="center" style="margin-bottom:16px;"><button class="secondary" onclick="toggleHistory()">Show round history</button></div>`;
-  const header=`<tr class="sub"><td>Round</td>${room.players.map(p=>`<td class="center">${p.name}</td>`).join('')}</tr>`;
-  const rows=room.history.map(h=>`<tr><td>${h.round}</td>${room.players.map(p=>{
-    const sc=h.roundScores[p.uid];
-    const bid=h.bids?h.bids[p.uid]:null;
-    const won=h.tricksWon?h.tricksWon[p.uid]:null;
-    const bonus = bid===8 && won===8;
-    const detail = (bid!=null && won!=null) ? `<div class="sub" style="margin:0;font-size:10px;">bid ${bid}, won ${won}</div>` : '';
-    return `<td class="center" style="color:${sc>=0?'var(--success)':'var(--danger)'};">${sc>=0?'+':''}${sc}${bonus?' \u2605':''}${detail}</td>`;
-  }).join('')}</tr>`).join('');
-
-  return `<div class="panel"><div class="sub" style="margin-bottom:8px;display:flex;justify-content:space-between;align-items:center;">Round history <button class="secondary" onclick="toggleHistory()">Hide</button></div><table class="hist">${header}${rows}</table>
-  <div style="margin-top:10px;"><button class="secondary" onclick="copyGameHistory()">Copy full history (JSON)</button></div></div>`;
 }
 
 function getLogEntries(){
@@ -846,6 +827,23 @@ function renderLogSection(){
     <div class="row" style="margin-bottom:8px;">${chips}</div>
     ${entry?renderTrickLogBody(entry):''}
   </div>`;
+}
+
+function renderHistory(){
+  if(!room.history || room.history.length===0) return '';
+  if(!showHistory) return `<div class="center" style="margin-bottom:16px;"><button class="secondary" onclick="toggleHistory()">Show round history</button></div>`;
+  const header=`<tr class="sub"><td>Round</td>${room.players.map(p=>`<td class="center">${p.name}</td>`).join('')}</tr>`;
+  const rows=room.history.map(h=>`<tr><td>${h.round}</td>${room.players.map(p=>{
+    const sc=h.roundScores[p.uid];
+    const bid=h.bids?h.bids[p.uid]:null;
+    const won=h.tricksWon?h.tricksWon[p.uid]:null;
+    const bonus = bid===8 && won===8;
+    const detail = (bid!=null && won!=null) ? `<div class="sub" style="margin:0;font-size:10px;">bid ${bid}, won ${won}</div>` : '';
+    return `<td class="center" style="color:${sc>=0?'var(--success)':'var(--danger)'};">${sc>=0?'+':''}${sc}${bonus?' \u2605':''}${detail}</td>`;
+  }).join('')}</tr>`).join('');
+
+  return `<div class="panel"><div class="sub" style="margin-bottom:8px;display:flex;justify-content:space-between;align-items:center;">Round history <button class="secondary" onclick="toggleHistory()">Hide</button></div><table class="hist">${header}${rows}</table>
+  <div style="margin-top:10px;"><button class="secondary" onclick="copyGameHistory()">Copy full history (JSON)</button></div></div>`;
 }
 
 function renderRulePanel(){
