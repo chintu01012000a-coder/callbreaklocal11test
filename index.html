@@ -274,9 +274,9 @@ function renderLanding(){
     </div>
   </div>`);
 }
-function showHostFlow(){ landingMode='host'; render(); }
-function showJoinFlow(){ landingMode='join'; render(); }
-function backToChoice(){ landingMode='choice'; render(); }
+function showHostFlow(){ landingMode='host'; renderLanding(); }
+function showJoinFlow(){ landingMode='join'; renderLanding(); }
+function backToChoice(){ landingMode='choice'; renderLanding(); }
 
 function getValidatedName(){
   const input=document.getElementById('nameInput');
