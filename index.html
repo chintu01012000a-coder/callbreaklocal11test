@@ -140,9 +140,8 @@ function botPickCard(hand,trick,trump,ctx){
   const tricksWon = ctx.tricksWon || 0;
   const playedCards = ctx.playedCards || [];
   const hasBidInfo = bid!=null;
-  const maxSafeWins = hasBidInfo ? bid+1 : Infinity;
   const wantsToWin = hasBidInfo && tricksWon < bid;
-  const shouldAvoidWinning = hasBidInfo && tricksWon >= maxSafeWins;
+  const shouldAvoidWinning = hasBidInfo && tricksWon >= bid;
 
   if(trick.length===0){
     const nonTrump=valid.filter(c=>c.suit!==trump);
@@ -170,18 +169,24 @@ function botPickCard(hand,trick,trump,ctx){
   return valid.reduce((a,b)=>a.rank<b.rank?a:b);
 }
 function isBotUid(uid){ return typeof uid==='string' && uid.indexOf('bot-')===0; }
+function isAutoDriven(uid){ return isBotUid(uid) || !!(room && room.autoPlayers && room.autoPlayers[uid]); }
+function myAutoOn(){ return isAutoDriven(myUid); }
 
 let myUid=null, myName='', roomId=null, roomRef=null, myHandRef=null;
 let room=null, myHand={cards:[],bid:null};
 let localTrumpOptions=null, myBidDraft=5;
 let botMoving=false;
 let optimisticCard=null;
-let myAutoPlay=false;
 let showStartModal=false, pendingElevenMode=true;
 let showHistory=false, showLog=false, logRound=null;
 let landingMode='choice';
 
-function toggleMyAutoPlay(){ myAutoPlay=!myAutoPlay; render(); if(myAutoPlay && room) onRoomChange(); }
+async function toggleMyAutoPlay(){
+  if(!roomRef || !room) return;
+  const next = !myAutoOn();
+  try{ await roomRef.update({['autoPlayers.'+myUid]: next}); }
+  catch(e){ console.error('failed to toggle auto-play', e); }
+}
 function forceRefresh(){
   handled.clear();
   botMoving=false;
@@ -192,12 +197,6 @@ function forceRefresh(){
   if(myHandRef){
     myHandRef.get({source:'server'}).then(snap=>{ if(snap.exists){ myHand=snap.data(); } render(); }).catch(()=>{});
   }
-}
-async function autoSubmitMyBid(){
-  const bid=estimateBid(myHand.cards, room.trumpSuit);
-  myBidDraft=bid;
-  await myHandRef.update({bid});
-  await roomRef.update({['readyPlayers.'+myUid]:true});
 }
 function displayTrick(){
   let t=(room.currentTrick||[]).slice();
@@ -307,7 +306,7 @@ async function doCreate(humanCount){
     phase:'waiting', round:0, dealSeq:0, dealerSeat:0, trumpChooserSeat:1,
     trumpSuit:null, sideOf:{}, currentTrick:[], leaderSeat:0, trickNum:1,
     tricksWon:{}, scores:{}, revealedBids:{}, roundScores:{}, history:[], playedCards:[], currentRoundTricks:[],
-    readyPlayers:{}, cancelReason:'', ruleMode:'local', elevenMode:true, redealAttempt:0
+    readyPlayers:{}, cancelReason:'', ruleMode:'local', elevenMode:true, redealAttempt:0, autoPlayers:{}
   });
   history.replaceState(null,'','?room='+roomId);
   subscribe();
@@ -357,11 +356,8 @@ function onRoomChange(){
   const seq=room.dealSeq||0;
   if((room.currentTrick||[]).length===0){ optimisticCard=null; }
 
-  if(room.phase==='trump' && !room.trumpSuit && isBotUid(room.players[room.trumpChooserSeat].uid)){
+  if(room.phase==='trump' && !room.trumpSuit && isAutoDriven(room.players[room.trumpChooserSeat].uid)){
     onceAsync('trumpbot-'+seq, ()=>roomRef.update({trumpSuit: SUITS[Math.floor(Math.random()*4)].key}));
-  }
-  if(room.phase==='trump' && !room.trumpSuit && mySeat()===room.trumpChooserSeat && myAutoPlay){
-    onceAsync('autotrump-'+myUid+'-'+seq, ()=>roomRef.update({trumpSuit: SUITS[Math.floor(Math.random()*4)].key}));
   }
   if(room.phase==='trump' && room.trumpSuit){
     onceAsync('deal-'+seq, performDeal);
@@ -371,13 +367,10 @@ function onRoomChange(){
   }
   if(room.phase==='bidding'){
     room.players.forEach(p=>{
-      if(isBotUid(p.uid) && !(room.readyPlayers&&room.readyPlayers[p.uid])){
+      if(isAutoDriven(p.uid) && !(room.readyPlayers&&room.readyPlayers[p.uid])){
         onceAsync('botbid-'+p.uid+'-'+seq, ()=>doBotBid(p.uid));
       }
     });
-    if(myAutoPlay && !(room.readyPlayers&&room.readyPlayers[myUid])){
-      onceAsync('autobid-'+myUid+'-'+seq, autoSubmitMyBid);
-    }
     const ready=room.readyPlayers||{};
     if(room.players.every(p=>ready[p.uid])){
       onceAsync('start-'+seq, tryStartPlaying);
@@ -385,22 +378,14 @@ function onRoomChange(){
   }
   if(room.phase==='playing' && (room.currentTrick||[]).length<4){
     const seat=seatToAct(); const p=room.players[seat];
-    if(p && isBotUid(p.uid) && !botMoving){
+    if(p && isAutoDriven(p.uid) && !botMoving){
       botMoving=true;
-      setTimeout(()=>{ doBotPlay(p.uid, seat).finally(()=>{ botMoving=false; onRoomChange(); }); }, 450);
+      setTimeout(()=>{ doBotPlay(p.uid, seat).finally(()=>{ botMoving=false; onRoomChange(); }); }, 0);
     }
-    if(seat===mySeat() && !optimisticCard){
+    if(!myAutoOn() && seat===mySeat() && !optimisticCard){
       const valid=computeValidCards(myHand.cards, room.currentTrick||[], room.trumpSuit);
-      if(valid.length===1 || myAutoPlay){
-        let chosen;
-        if(valid.length===1){
-          chosen=valid[0];
-        } else {
-          const myTricksWon=(room.tricksWon&&room.tricksWon[myUid])||0;
-          const myPlayedCards=(room.playedCards||[]).concat((room.currentTrick||[]).map(e=>e.card));
-          chosen=botPickCard(myHand.cards, room.currentTrick||[], room.trumpSuit, {bid: myHand.bid, tricksWon: myTricksWon, playedCards: myPlayedCards});
-        }
-        onceAsync('autoplay-'+seq+'-'+room.trickNum+'-'+(room.currentTrick||[]).length, ()=>new Promise(res=>setTimeout(()=>{ playCard(chosen.suit, chosen.rank).then(res).catch(res); }, 300)));
+      if(valid.length===1){
+        onceAsync('autoplay-'+seq+'-'+room.trickNum+'-'+(room.currentTrick||[]).length, ()=>new Promise(res=>setTimeout(()=>{ playCard(valid[0].suit, valid[0].rank).then(res).catch(res); }, 300)));
       }
     }
   }
@@ -410,7 +395,7 @@ function onRoomChange(){
   }
   if(room.cancelRequest){
     room.players.forEach(p=>{
-      if(isBotUid(p.uid) && !room.cancelRequest.votes[p.uid]){
+      if(isAutoDriven(p.uid) && !room.cancelRequest.votes[p.uid]){
         onceAsync('cancelbotvote-'+p.uid+'-'+room.cancelRequest.id, ()=>roomRef.update({['cancelRequest.votes.'+p.uid]:true}));
       }
     });
@@ -423,7 +408,7 @@ function onRoomChange(){
       roomRef.update({['revealedBids.'+myUid]: myHand.bid});
     }
     room.players.forEach(p=>{
-      if(isBotUid(p.uid) && !(room.revealedBids&&room.revealedBids[p.uid]!=null)){
+      if(isAutoDriven(p.uid) && !(room.revealedBids&&room.revealedBids[p.uid]!=null)){
         onceAsync('botreveal-'+p.uid+'-'+seq, ()=>revealBotBid(p.uid));
       }
     });
@@ -849,7 +834,7 @@ function renderHistory(){
 function renderRulePanel(){
   if(room.phase==='waiting') return '';
   const label = `Local rules \u00b7 11 mode ${room.elevenMode?'on':'off'}`;
-  const autoBtn = `<button class="secondary" onclick="toggleMyAutoPlay()" title="Plays your trump pick, bid, and cards for you">Auto: ${myAutoPlay?'On':'Off'}</button>`;
+  const autoBtn = `<button class="secondary" onclick="toggleMyAutoPlay()" title="Plays your trump pick, bid, and cards for you \u2014 continues even if you close the app">Auto: ${myAutoOn()?'On':'Off'}</button>`;
   const logBtn = `<button class="secondary" onclick="toggleLog()">${showLog?'Hide log':'Log'}</button>`;
   return `<div class="panel">
     <div class="sub" style="margin-bottom:8px;">${label}</div>
